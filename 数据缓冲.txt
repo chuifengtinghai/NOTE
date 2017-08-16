@@ -1,0 +1,244 @@
+/************************通用数据fifo********************************/
+#define DATAMAX  2000
+typedef struct
+{
+	u16 BaseAddr;     //起始地址
+	u16 P_OffSet;     //写指针
+	u16 N_OffSet;     //读指针
+	u8 Data[DATAMAX];
+	u16 Num;          //当前数据数量
+}_FIFO;
+
+_FIFO fifo[3];
+
+void fifo_init(void)
+{
+	u8 i;
+	for(i=0;i<3;i++)
+	{
+		fifo[i].P_OffSet=0;
+		fifo[i].N_OffSet=0;
+		fifo[i].Num=0;
+	}
+}
+
+int fifo_get(u8 s)          //从fifo获取数据
+{
+	int temp=-1;
+		
+	if (fifo[s].Num>0)     //判断fifo有无数据
+	{
+		temp=fifo[s].Data[fifo[s].N_OffSet++];
+		fifo[s].Num=fifo[s].Num-1;
+		if(fifo[s].N_OffSet>=DATAMAX)  //构成环形队列
+		{
+			fifo[s].N_OffSet=0;
+		}
+		return temp;
+	}
+	else
+	{
+		return -1;          //无数据返回-1
+	}
+}
+
+void fifo_put(u8 data,u8 s)           //将数据写入FIFO
+{	
+	if(fifo[s].Num<DATAMAX)           //判断fifo是否溢出
+	{
+		fifo[s].Data[fifo[s].P_OffSet++]=data;
+		if(fifo[s].P_OffSet<DATAMAX)
+		{
+			fifo[s].Num++;
+		}
+		else
+		{
+			fifo[s].P_OffSet=0;
+			fifo[s].Num++;
+		}
+		
+	}
+}
+/*******************************************************************/
+/*************************Can帧结构fifo_1*****************************/
+typedef struct
+  {
+  	u32 Flag;
+   	u32 ID[32];
+   	u8  Data[32][8];
+  }CANRecBuffstruct;
+CANRecBuffstruct CAN1RecBuff;
+/*---------------------------------
+Function: CAN1_RX0_IRQHandler(void)
+Descript: 接收中断服务函数
+-----------------------------------*/
+void CAN1_RX0_IRQHandler(void)
+{
+	u8 i,j;
+	CanMsg RxMessage;
+	//将数据从FIFO 复制到RxMessage
+	Can_Rx_Msg(CAN1,0,&RxMessage);
+	//数据复制到缓冲区
+    for(i=0;i<32;i++)
+    {
+	  if( (CAN1RecBuff.Flag&((u32)1<<i))==0)
+	  {
+		CAN1RecBuff.ID[i]=RxMessage.ID;
+		for(j=0;j<8;j++)
+		{
+			CAN1RecBuff.Data[i][j]=RxMessage.Data[j];
+		}
+		CAN1RecBuff.Flag|=((u32)1<<i);
+		break;
+	  }	
+    }
+}
+static void Can1Rec(void)
+{
+  u16 i; 
+  u32 temp;
+	
+	__disable_irq();
+	temp=CAN1RecBuff.Flag;    //获取数据缓冲区有效数据标志
+	__enable_irq();
+	
+	for(i=0;i<32;i++)
+	{
+		if( temp&((u32)1<<i) )
+		{
+			CAN1RecBuffFx(i);  //处理接收数据
+		}
+	}	
+	
+	__disable_irq();
+	CAN1RecBuff.Flag&=(~temp);  //释放缓冲区有效数据标志
+	__enable_irq();	
+}
+/*******************************************************************/
+/*******************************************************************/
+//帧缓存区结构
+typedef struct
+{
+  u32 ID;      // identifier
+  u8  IDE;     //the type of identifier  
+  u8  RTR;     //type of frame 
+  u8  DLC;     //length of the frame 
+  u8  Data[8]; //data 
+  u8  FMI;     //index of the filter the message stored in the mailbox passes through.
+}CanMsg;
+//用于初始化CAN帧缓存区块的数据 
+const CANFRAME GtCanFrameInit={    
+	0,  
+	0,
+	0,
+	0,
+	{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+	0
+}
+//循环队列缓存区数据结构
+typedf struct
+{
+	u32  ulWriteIndex;         //写指针
+	u32  ulReadIndex;          //读指针
+	u16  Length;               //记录缓存深度
+	BOOL IsFull;               //缓存区满标志
+	CanMsg *ptCanFramBuf;      //指向帧缓存区首地址  
+}CANCIRBUF;
+//初始化队列及缓冲区
+void canCirBufInit(CANCIRBUF *ptCanCirBuf,CanMsg *ptCanFrameBuf,u8 length)
+{
+	u16 i;
+	ptCanCirBuf->ulWriteIndex =0;   //写指针清零
+	ptCanCirBuf->ulReadIndex =0;    //读指针清零
+	ptCanCirBuf->IsFull =0;         //满标志清空
+	ptCanCirBuf->Length =length;    //记录缓存深度
+	ptCanCirBuf->ptCanFramBuf =ptCanFrameBuf; //指向帧缓存区首地址
+	for(i=0;i<length;i++)
+	{
+		ptCanCirBuf->ptCanFramBuf[i] =GtCanFrameInit;
+	}
+}
+//从指定的循环队列申请一帧报文的存储空间
+CanMsg *canCirBufMalloc(CANCIRBUF *ptCanCirBuf)
+{
+	CanMsg *ptCanFrame;
+	if(ptCanCirBuf == (CANCIRBUF *)0)
+	{
+		return 0;  //队列错误
+	}
+	if(ptCanCirBuf->IsFull ==1)
+	{
+		return 0;  //队列满，返回0
+	}
+	__disable_irq();   //关闭总中断
+	ptCanFrame =&(ptCanCirBuf->ptCanFramBuf[ptCanCirBuf->ulWriteIndex++]);  //取得需要返回的地址
+	if(ptCanCirBuf->ulWriteIndex ==ptCanCirBuf->Length)
+	{
+		ptCanCirBuf->ulWriteIndex =0; //构成循环队列
+	}
+	if(ptCanCirBuf->ulWriteIndex == ptCanCirBuf->ulReadIndex)
+	{
+		ptCanCirBuf->IsFull=1;  //队列满
+	}
+	__enable_irq();
+	*ptCanFrame =GtCanFrameInit;
+	return ptCanFrame;
+}
+//从指定的循环队列中读取报文
+u8 canCirBufRead(CANCIRBUF *ptCanCirBuf,CanMsg *ptCanFrame)
+{
+	u8 ucReturn =0;
+	u32 Index;
+	if(ptCanCirBuf == (CANCIRBUF *)0)
+	{
+		return 0;   //队列错误
+	}
+	__disable_irq();
+	if((ptCanCirBuf->ulReadIndex !=ptCanCirBuf->ulWriteIndex)||(ptCanCirBuf->IsFull ==1))
+	{
+		Index =ptCanCirBuf->ulReadIndex;
+//		if(ptCanCirBuf->ptCanFramBuf[Index].ucTypeFormat != 0)
+//		{
+			*ptCanFrame =ptCanCirBuf->ptCanFramBuf[Index];
+			ptCanCirBuf->ulReadIndex +=1;    //读指针加1
+			if(ptCanCirBuf->ulReadIndex == ptCanCirBuf->Length)
+			{
+				ptCanCirBuf->ulReadIndex =0;  //形成环形队列
+			}
+			ptCanCirBuf->IsFull =0;           //清除缓存区满标志
+			ucReturn =1;
+//		}
+	}
+	__enable_irq();
+	return ucReturn;
+}
+//向循环队列缓存区写一帧数据
+u8 canCirBufWrite(CANCIRBUF *ptCanCirBuf,CanMsg *ptCanFrame)
+{
+	CanMsg *ptCanFrameObject;
+	u8 i =0;
+	ptCanFrameObject =canCirBufMalloc(ptCanCirBuf); //从缓存区申请一帧报文的存储空间
+	if(ptCanFrameObject == (CanMsg *)0)
+	{
+		return 0;  //申请失败
+	}
+	ptCanFrameObject->IDE =ptCanFrame->IDE;
+	ptCanFrameObject->DLC =ptCanFrame->DLC;
+	ptCanFrameObject->RTR =ptCanFrame->RTR;
+	ptCanFrameObject->ID =ptCanFrame->ID;
+	for(i=0;i<8;i++)
+	{
+		ptCanFrameObject->Data[i] =ptCanFrame->Data[i]; 
+	}
+    //ptCanFrameObject->ucTypeFormat =ptCanFrame->ucTypeFormat;  //写报文类型，使这帧报文有效
+	return 1;
+}
+static void Can2Rec(void)
+{
+    u8 temp;
+    CanMsg TxMessage;
+	temp=canCirBufRead(&GtCanReCirBuf,&TxMessage);
+	if(temp==1)  //读取成功，进行发送
+		Can2_Tx_Msg(&TxMessage);
+}
+/*****************************************************************************************/
