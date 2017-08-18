@@ -1,0 +1,24 @@
+1、FATFS文件系统程序的结构
+	最顶层是应用层，使用者无需理会 FATFS 的内部结构和复杂的 FAT 协议，只需要调用FATFS 模块提供给用户的一系列应用接口函数，如 f_open， f_read， f_write ，f_close 等，就可以像在 PC 上读／写文件那样简单。
+	中间层 FATFS 模块， 实现了 FAT 文件读／写协议。 FATFS 模块提供的是ff.c和ff.h。除非有必要，使用者一般不用修改，使用时将头文件直接包含进去即可。
+	需要我们编写移植代码的是 FATFS 模块提供的底层接口，它包括存储媒介读／写接口 （ diskI/O） 和供给文件创建修改时间的实时时钟。
+	最终程序结构如下：
+	SD卡底层驱动---->diskio.c进行统一封装---->FATFS调用diskio.c---->APP再调用FATFS
+	
+2、FATFS文件夹目录结构
+	其中，与平台无关的是：
+	ffconf.h FATFS 模块配置文件
+	ff.h FATFS 和应用模块公用的包含文件
+	ff.c FATFS 模块
+	diskio.h FATFS 和 disk I/O 模块公用的包含文件
+	interger.h 数据类型定义
+	option 可选的外部功能（比如支持中文等）cc936.c 主要提供 UNICODE 到 GBK 以及 GBK 到 UNICODE 的码表转换，里面就是两个大数组，并提供一个ff_convert的转换函数，供 UNICODE 和 GBK 码互换，这个在中文长文件名支持的时候必须用到与平台相关的代码（需要用户提供）是：diskio.c FATFS 和 disk I/O 模块接口层文件
+	
+	FATFS 模块在移植的时候，我们一般只需要修改 2 个文件，即 ffconf.h 和 diskio.c。 
+	FATFS模块的所有配置项都是存放在ffconf.h里面，我们可以通过配置里面的一些选项，来满足自己的需求。
+	下面我们来讲讲 FATFS 的移植， FATFS 的移植主要分为 3 步：
+	① 数据类型： 在 integer.h 里面去定义好数据的类型。这里需要了解你用的编译器的数据类型，并根据编译器定义好数据类型。
+	② 配置： 通过 ffconf.h 配置 FATFS 的相关功能，以满足你的需要。
+	③ 函数编写：打开 diskio.c，进行底层驱动编写， 一般需要编写 6 个接口函数，若在 ffconf.h 里面设置对长文件名的支持为方法 3，还必须实现 ff_memalloc和ff_memfree这两个函数
+3、FATFS 提供了很多 API 函数，这些函数 FATFS 的自带介绍文件里面都有详细的介绍(包括参考代码)，我们这里就不多说了。这里需要注意的是，在使用 FATFS的时候，必须先通过
+	f_mount函数注册一个工作区，才能开始后续 API 的使用，关于 FATFS 的介绍，我们就介绍到这里。大家可以通过 FATFS 自带的介绍文件进一步了解和熟悉 FATFS 的使用。
